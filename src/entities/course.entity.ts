@@ -49,6 +49,20 @@ export class Course {
   credits: number;
 
   @ApiProperty({
+    description: 'Maximum number of students that can enroll in this course',
+    example: 30,
+  })
+  @Column({ type: 'integer', nullable: true })
+  maxCapacity: number;
+
+  @ApiProperty({
+    description: 'Prerequisites required for this course (comma-separated course IDs)',
+    example: '1,2',
+  })
+  @Column({ type: 'text', nullable: true })
+  prerequisites: string;
+
+  @ApiProperty({
     description: 'The ID of the college the course belongs to',
     example: 1,
   })

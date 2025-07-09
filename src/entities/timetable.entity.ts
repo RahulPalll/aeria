@@ -62,6 +62,13 @@ export class Timetable {
   endTime: string;
 
   @ApiProperty({
+    description: 'Indicates if this class crosses midnight (overnight class)',
+    example: false,
+  })
+  @Column({ type: 'boolean', default: false })
+  isOvernightClass: boolean;
+
+  @ApiProperty({
     description: 'The room where the class is held',
     example: 'Room 101',
   })

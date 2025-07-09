@@ -48,6 +48,8 @@ CREATE TABLE courses (
     name VARCHAR(255) NOT NULL,
     description TEXT,
     credits INTEGER DEFAULT 3,
+    "maxCapacity" INTEGER,
+    prerequisites TEXT,
     "collegeId" INTEGER NOT NULL,
     "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
@@ -58,7 +60,11 @@ CREATE TABLE courses (
     
     -- Check constraint: credits must be positive
     CONSTRAINT chk_credits_positive 
-        CHECK (credits > 0)
+        CHECK (credits > 0),
+    
+    -- Check constraint: max capacity must be positive if specified
+    CONSTRAINT chk_max_capacity_positive 
+        CHECK ("maxCapacity" IS NULL OR "maxCapacity" > 0)
 );
 
 -- ================================
@@ -70,6 +76,7 @@ CREATE TABLE timetables (
     "dayOfWeek" day_of_week NOT NULL,
     "startTime" TIME NOT NULL,
     "endTime" TIME NOT NULL,
+    "isOvernightClass" BOOLEAN DEFAULT FALSE,
     room VARCHAR(100),
     "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
@@ -78,9 +85,19 @@ CREATE TABLE timetables (
         FOREIGN KEY ("courseId") REFERENCES courses(id) 
         ON DELETE CASCADE,
     
-    -- Check constraint: end time must be after start time
+    -- Check constraint: for non-overnight classes, end time must be after start time
     CONSTRAINT chk_valid_time_range 
-        CHECK ("endTime" > "startTime"),
+        CHECK (
+            ("isOvernightClass" = TRUE) OR 
+            ("isOvernightClass" = FALSE AND "endTime" > "startTime")
+        ),
+    
+    -- Check constraint: for overnight classes, start time should be different from end time
+    CONSTRAINT chk_overnight_class_time 
+        CHECK (
+            ("isOvernightClass" = FALSE) OR 
+            ("isOvernightClass" = TRUE AND "startTime" != "endTime")
+        ),
     
     -- Unique constraint: prevent duplicate timetable entries for same course
     CONSTRAINT uk_timetable_unique 
@@ -112,6 +129,39 @@ CREATE TABLE student_course_selections (
 );
 
 -- ================================
+-- TABLE: enrollment_configs
+-- ================================
+CREATE TABLE enrollment_configs (
+    id SERIAL PRIMARY KEY,
+    "collegeId" INTEGER NOT NULL,
+    "maxCreditHoursPerSemester" INTEGER DEFAULT 18,
+    "maxStudyHoursPerDay" INTEGER DEFAULT 8,
+    "minBreakTimeBetweenClasses" INTEGER DEFAULT 15,
+    "maxCoursesPerSemester" INTEGER DEFAULT 6,
+    "allowOvernightClasses" BOOLEAN DEFAULT FALSE,
+    "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    
+    -- Foreign key constraint
+    CONSTRAINT fk_enrollment_config_college 
+        FOREIGN KEY ("collegeId") REFERENCES colleges(id) 
+        ON DELETE CASCADE,
+    
+    -- Unique constraint: one config per college
+    CONSTRAINT uk_enrollment_config_college 
+        UNIQUE ("collegeId"),
+    
+    -- Check constraints for positive values
+    CONSTRAINT chk_max_credit_hours_positive 
+        CHECK ("maxCreditHoursPerSemester" > 0),
+    CONSTRAINT chk_max_study_hours_positive 
+        CHECK ("maxStudyHoursPerDay" > 0),
+    CONSTRAINT chk_min_break_time_positive 
+        CHECK ("minBreakTimeBetweenClasses" >= 0),
+    CONSTRAINT chk_max_courses_positive 
+        CHECK ("maxCoursesPerSemester" > 0)
+);
+
+-- ================================
 -- INDEXES for Performance
 -- ================================
 
@@ -130,6 +180,9 @@ CREATE INDEX idx_timetables_schedule ON timetables("dayOfWeek", "startTime", "en
 -- Index on student course selections for faster enrollment queries
 CREATE INDEX idx_selections_student_id ON student_course_selections("studentId");
 CREATE INDEX idx_selections_course_id ON student_course_selections("courseId");
+
+-- Index on enrollment configs for faster lookups
+CREATE INDEX idx_enrollment_config_college_id ON enrollment_configs("collegeId");
 
 -- ================================
 -- DATABASE CONSTRAINTS (Bonus Requirement)

@@ -14,6 +14,7 @@ import { College } from '../entities/college.entity';
 import { EnrollStudentDto } from '../dto/enroll-student.dto';
 import { UnenrollStudentDto } from '../dto/unenroll-student.dto';
 import { ValidateEnrollmentDto } from '../dto/validate-enrollment.dto';
+import { EnhancedValidationService } from './enhanced-validation.service';
 
 @Injectable()
 export class EnrollmentService {
@@ -29,6 +30,7 @@ export class EnrollmentService {
     @InjectRepository(College)
     private collegeRepository: Repository<College>,
     private dataSource: DataSource,
+    private enhancedValidationService: EnhancedValidationService,
   ) {}
 
   async enrollStudent(
@@ -88,11 +90,17 @@ export class EnrollmentService {
             where: courseIds.map((courseId) => ({ courseId })),
           });
 
-          // 5. Check for timetable conflicts
-          const conflicts = this.findTimetableConflicts(timetables);
-          if (conflicts.length > 0) {
+          // 5. Enhanced validation for all edge cases
+          const validationResult = await this.enhancedValidationService.validateEnrollmentEdgeCases(
+            studentId,
+            courses,
+            timetables,
+            student.collegeId,
+          );
+
+          if (!validationResult.valid) {
             throw new BadRequestException(
-              `Timetable conflicts detected: ${conflicts.join(', ')}`,
+              `Enrollment validation failed: ${validationResult.violations.join('; ')}`,
             );
           }
 
@@ -409,16 +417,22 @@ export class EnrollmentService {
         issues.push(`Student is already enrolled in: ${enrolledCourses.join(', ')}`);
       }
 
-      // Check timetable conflicts
+      // Enhanced validation using the new validation service
       if (courses.length > 0) {
         const timetables = await this.timetableRepository.find({
           where: { courseId: In(courses.map((c) => c.id)) },
           relations: ['course'],
         });
 
-        const conflicts = this.findTimetableConflicts(timetables);
-        if (conflicts.length > 0) {
-          issues.push(...conflicts);
+        const validationResult = await this.enhancedValidationService.validateEnrollmentEdgeCases(
+          studentId,
+          courses,
+          timetables,
+          student.collegeId,
+        );
+
+        if (!validationResult.valid) {
+          issues.push(...validationResult.violations);
         }
       }
 
