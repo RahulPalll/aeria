@@ -113,6 +113,7 @@ CREATE TABLE student_course_selections (
     "courseId" INTEGER NOT NULL,
     "enrolledAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     status enrollment_status DEFAULT 'ENROLLED',
+    grade VARCHAR(5),
     
     -- Foreign key constraints
     CONSTRAINT fk_selections_student 

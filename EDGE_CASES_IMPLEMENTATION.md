@@ -218,6 +218,19 @@ POST /api/enrollment/enroll
    - Stanford: No overnight classes, 16 credit hours, 7 study hours/day  
    - UC Berkeley: No overnight classes, 20 credit hours, 9 study hours/day
 
+6. **✅ Course Completion and Grade Tracking**
+   ```bash
+   # Mark course as completed with grade
+   curl -X PUT http://localhost:3000/admin/course-completion \
+     -H "Content-Type: application/json" \
+     -d '{"studentId": 4, "courseId": 8, "grade": "B+"}'
+   # Result: ✅ "Course MATH201 marked as completed for student Bob Wilson with grade B+"
+   
+   # View completed courses with grades
+   curl http://localhost:3000/admin/student-completed-courses/4
+   # Result: ✅ Shows completed courses with grades (CS201: A+, MATH201: B+)
+   ```
+
 ### Database Schema Successfully Enhanced:
 
 ```sql
@@ -227,6 +240,9 @@ ALTER TABLE courses ADD COLUMN prerequisites TEXT;
 
 -- Added to timetables table  
 ALTER TABLE timetables ADD COLUMN "isOvernightClass" BOOLEAN DEFAULT FALSE;
+
+-- Added to student_course_selections table
+ALTER TABLE student_course_selections ADD COLUMN grade VARCHAR(5);
 
 -- New enrollment_configs table created
 CREATE TABLE enrollment_configs (
