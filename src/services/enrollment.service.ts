@@ -475,4 +475,99 @@ export class EnrollmentService {
       throw new BadRequestException('Failed to retrieve course timetable: ' + error.message);
     }
   }
+
+  /**
+   * Mark a course as completed for a student
+   * Used by professors/admin when student finishes a course
+   */
+  async markCourseCompleted(
+    studentId: number,
+    courseId: number,
+    grade?: string,
+  ): Promise<{ message: string; enrollment: StudentCourseSelection }> {
+    // Find the active enrollment
+    const enrollment = await this.studentCourseSelectionRepository.findOne({
+      where: {
+        studentId,
+        courseId,
+        status: EnrollmentStatus.ENROLLED,
+      },
+      relations: ['student', 'course'],
+    });
+
+    if (!enrollment) {
+      throw new NotFoundException(
+        `No active enrollment found for student ${studentId} in course ${courseId}`,
+      );
+    }
+
+    // Mark as completed and save grade
+    enrollment.status = EnrollmentStatus.COMPLETED;
+    if (grade) {
+      enrollment.grade = grade;
+    }
+    
+    // Save the completion
+    const completedEnrollment = await this.studentCourseSelectionRepository.save(enrollment);
+
+    return {
+      message: `Course ${enrollment.course.code} marked as completed for student ${enrollment.student.name}${grade ? ` with grade ${grade}` : ''}`,
+      enrollment: completedEnrollment,
+    };
+  }
+
+  /**
+   * Get student's completed courses (for prerequisites checking)
+   */
+  async getStudentCompletedCourses(studentId: number): Promise<Course[]> {
+    const completedEnrollments = await this.studentCourseSelectionRepository.find({
+      where: {
+        studentId,
+        status: EnrollmentStatus.COMPLETED,
+      },
+      relations: ['course'],
+    });
+
+    return completedEnrollments.map(enrollment => enrollment.course);
+  }
+
+  /**
+   * Get student's completed courses with grades (for admin interface)
+   */
+  async getStudentCompletedCoursesWithGrades(studentId: number): Promise<StudentCourseSelection[]> {
+    return await this.studentCourseSelectionRepository.find({
+      where: {
+        studentId,
+        status: EnrollmentStatus.COMPLETED,
+      },
+      relations: ['course'],
+    });
+  }
+
+  /**
+   * Bulk complete courses for semester end
+   */
+  async bulkCompleteCourses(
+    completions: Array<{ studentId: number; courseId: number; grade?: string }>,
+  ): Promise<{ message: string; completed: number }> {
+    let completedCount = 0;
+
+    for (const completion of completions) {
+      try {
+        await this.markCourseCompleted(
+          completion.studentId,
+          completion.courseId,
+          completion.grade,
+        );
+        completedCount++;
+      } catch (error) {
+        console.warn(`Failed to complete course for student ${completion.studentId}: ${error.message}`);
+      }
+    }
+
+    return {
+      message: `Bulk completion processed: ${completedCount}/${completions.length} courses completed`,
+      completed: completedCount,
+    };
+  }
 }

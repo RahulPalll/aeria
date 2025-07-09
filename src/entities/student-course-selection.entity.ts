@@ -14,6 +14,7 @@ export enum EnrollmentStatus {
   ENROLLED = 'ENROLLED',
   WITHDRAWN = 'WITHDRAWN',
   COMPLETED = 'COMPLETED',
+  FAILED = 'FAILED',
 }
 
 @Entity('student_course_selections')
@@ -59,6 +60,14 @@ export class StudentCourseSelection {
     default: EnrollmentStatus.ENROLLED,
   })
   status: EnrollmentStatus;
+
+  @ApiProperty({
+    description: 'The grade earned by the student in the course',
+    example: 'A',
+    required: false,
+  })
+  @Column({ nullable: true, length: 5 })
+  grade: string;
 
   @ApiProperty({
     description: 'The student enrolled in the course',

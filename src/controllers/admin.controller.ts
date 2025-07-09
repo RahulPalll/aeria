@@ -18,6 +18,7 @@ import {
   ApiBody,
 } from '@nestjs/swagger';
 import { AdminService } from '../services/admin.service';
+import { EnrollmentService } from '../services/enrollment.service';
 import { CreateTimetableDto } from '../dto/create-timetable.dto';
 import { CreateCollegeDto } from '../dto/create-college.dto';
 import { CreateStudentDto } from '../dto/create-student.dto';
@@ -26,7 +27,10 @@ import { CreateCourseDto } from '../dto/create-course.dto';
 @ApiTags('admin')
 @Controller('admin')
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly enrollmentService: EnrollmentService,
+  ) {}
 
   @Post('timetable')
   @ApiOperation({
@@ -585,5 +589,95 @@ export class AdminController {
   })
   async deleteCourse(@Param('id', ParseIntPipe) id: number) {
     return await this.adminService.deleteCourse(id);
+  }
+
+  // Course Completion Management
+  @Put('course-completion')
+  @ApiOperation({
+    summary: 'Mark course as completed for student',
+    description: 'Mark a course as completed for a student (used by professors/admin)',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        studentId: { type: 'number', example: 1 },
+        courseId: { type: 'number', example: 1 },
+        grade: { type: 'string', example: 'A' },
+      },
+      required: ['studentId', 'courseId'],
+    },
+  })
+  @ApiResponse({
+    status: HttpStatus.OK,
+    description: 'Course marked as completed successfully',
+  })
+  async markCourseCompleted(
+    @Body() data: { studentId: number; courseId: number; grade?: string },
+  ) {
+    return this.enrollmentService.markCourseCompleted(
+      data.studentId,
+      data.courseId,
+      data.grade,
+    );
+  }
+
+  @Post('bulk-course-completion')
+  @ApiOperation({
+    summary: 'Bulk complete courses (semester end)',
+    description: 'Mark multiple courses as completed for multiple students',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        completions: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              studentId: { type: 'number' },
+              courseId: { type: 'number' },
+              grade: { type: 'string' },
+            },
+            required: ['studentId', 'courseId'],
+          },
+        },
+      },
+    },
+  })
+  async bulkCompleteCourses(
+    @Body() data: { completions: Array<{ studentId: number; courseId: number; grade?: string }> },
+  ) {
+    return this.enrollmentService.bulkCompleteCourses(data.completions);
+  }
+
+  @Get('student-completed-courses/:studentId')
+  @ApiOperation({
+    summary: 'Get student completed courses',
+    description: 'Get list of courses completed by a student',
+  })
+  @ApiParam({
+    name: 'studentId',
+    type: 'number',
+    description: 'Student ID',
+  })
+  async getStudentCompletedCourses(
+    @Param('studentId', ParseIntPipe) studentId: number,
+  ) {
+    const completedEnrollments = await this.enrollmentService.getStudentCompletedCoursesWithGrades(studentId);
+    return {
+      studentId,
+      completedCourses: completedEnrollments.map(enrollment => ({
+        id: enrollment.course.id,
+        code: enrollment.course.code,
+        name: enrollment.course.name,
+        credits: enrollment.course.credits,
+        grade: enrollment.grade,
+        completedAt: enrollment.enrolledAt,
+      })),
+      totalCompletedCourses: completedEnrollments.length,
+      totalCreditsCompleted: completedEnrollments.reduce((sum, enrollment) => sum + enrollment.course.credits, 0),
+    };
   }
 }
