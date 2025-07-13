@@ -41,7 +41,7 @@ export class AdminController {
   @ApiBody({
     type: CreateTimetableDto,
     description:
-      'Timetable data including course ID, day, times, and optional room',
+      'Timetable data including course ID, day, and times',
   })
   @ApiResponse({
     status: HttpStatus.CREATED,
@@ -54,7 +54,6 @@ export class AdminController {
         dayOfWeek: { type: 'string', example: 'MONDAY' },
         startTime: { type: 'string', example: '09:00' },
         endTime: { type: 'string', example: '10:30' },
-        room: { type: 'string', example: 'Room 101' },
         createdAt: { type: 'string', format: 'date-time' },
       },
     },
@@ -146,7 +145,6 @@ export class AdminController {
           pattern: '^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$',
           example: '16:00',
         },
-        room: { type: 'string', example: 'Room 102' },
       },
     },
     description: 'Partial timetable data to update',
@@ -162,7 +160,6 @@ export class AdminController {
         dayOfWeek: { type: 'string', example: 'MONDAY' },
         startTime: { type: 'string', example: '14:30' },
         endTime: { type: 'string', example: '16:00' },
-        room: { type: 'string', example: 'Room 102' },
         createdAt: { type: 'string', format: 'date-time' },
       },
     },
@@ -297,7 +294,6 @@ export class AdminController {
           dayOfWeek: { type: 'string', example: 'MONDAY' },
           startTime: { type: 'string', example: '09:00' },
           endTime: { type: 'string', example: '10:30' },
-          room: { type: 'string', example: 'Room 101' },
           createdAt: { type: 'string', format: 'date-time' },
         },
       },

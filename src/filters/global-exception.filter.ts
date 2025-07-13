@@ -7,7 +7,6 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
-import { QueryFailedError, EntityNotFoundError } from 'typeorm';
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
@@ -48,24 +47,42 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         message = String(exceptionResponse);
         error = exception.name;
       }
-    } else if (exception instanceof QueryFailedError) {
-      // For TypeORM query errors
-      status = HttpStatus.BAD_REQUEST;
-      const queryError = exception as unknown as { detail?: string };
-      message = queryError.detail
-        ? String(queryError.detail)
-        : 'Database query failed';
-      error = 'Database Error';
-    } else if (exception instanceof EntityNotFoundError) {
-      // For TypeORM entity not found errors
-      status = HttpStatus.NOT_FOUND;
-      message = exception.message || 'Entity not found';
-      error = 'Not Found';
     } else if (exception instanceof Error) {
-      // For other JavaScript errors
-      message = exception.message || message;
-      error = exception.name || error;
+      // For PostgreSQL/Database errors
+      const dbError = exception as any;
+      if (dbError.code) {
+        switch (dbError.code) {
+          case '23505': // Unique violation
+            status = HttpStatus.CONFLICT;
+            message = 'Duplicate entry';
+            error = 'Conflict';
+            break;
+          case '23503': // Foreign key violation
+            status = HttpStatus.BAD_REQUEST;
+            message = 'Referenced record not found';
+            error = 'Foreign Key Violation';
+            break;
+          case '23514': // Check constraint violation
+            status = HttpStatus.BAD_REQUEST;
+            message = 'Data validation failed';
+            error = 'Constraint Violation';
+            break;
+          default:
+            status = HttpStatus.INTERNAL_SERVER_ERROR;
+            message = 'Database error occurred';
+            error = 'Database Error';
+        }
+      } else {
+        // For other JavaScript errors
+        message = exception.message || message;
+        error = exception.name || error;
+      }
     }
+
+    this.logger.error(
+      `HTTP ${status} Error: ${message}`,
+      exception instanceof Error ? exception.stack : 'No stack trace available'
+    );
 
     response.status(status).json({
       statusCode: status,

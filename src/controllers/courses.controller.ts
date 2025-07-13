@@ -77,7 +77,6 @@ export class CoursesController {
           dayOfWeek: { type: 'string', example: 'MONDAY' },
           startTime: { type: 'string', example: '09:00' },
           endTime: { type: 'string', example: '10:30' },
-          room: { type: 'string', example: 'Room 101' },
         },
       },
     },

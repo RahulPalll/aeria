@@ -3,624 +3,650 @@ import {
   BadRequestException,
   NotFoundException,
   ConflictException,
+  Inject,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
-import { Course } from '../entities/course.entity';
-import { Timetable } from '../entities/timetable.entity';
-import { StudentCourseSelection } from '../entities/student-course-selection.entity';
-import { College } from '../entities/college.entity';
-import { Student } from '../entities/student.entity';
+import { Pool } from 'pg';
 import { CreateTimetableDto } from '../dto/create-timetable.dto';
 import { CreateCollegeDto } from '../dto/create-college.dto';
 import { CreateStudentDto } from '../dto/create-student.dto';
 import { CreateCourseDto } from '../dto/create-course.dto';
+import { 
+  College, 
+  Student, 
+  Course, 
+  Timetable, 
+  CourseWithTimetable 
+} from '../types/interfaces';
 
 @Injectable()
 export class AdminService {
   constructor(
-    @InjectRepository(Course)
-    private courseRepository: Repository<Course>,
-    @InjectRepository(Timetable)
-    private timetableRepository: Repository<Timetable>,
-    @InjectRepository(StudentCourseSelection)
-    private studentCourseSelectionRepository: Repository<StudentCourseSelection>,
-    @InjectRepository(College)
-    private collegeRepository: Repository<College>,
-    @InjectRepository(Student)
-    private studentRepository: Repository<Student>,
-    private dataSource: DataSource,
+    @Inject('DATABASE_POOL')
+    private pool: Pool,
   ) {}
 
-  async createTimetable(timetableData: CreateTimetableDto): Promise<Timetable> {
+  /**
+   * Create a new college
+   */
+  async createCollege(collegeData: CreateCollegeDto): Promise<College> {
+    const { name } = collegeData;
+    
+    const query = `
+      INSERT INTO colleges (name) 
+      VALUES ($1) 
+      RETURNING id, name
+    `;
+    
     try {
-      const { courseId, dayOfWeek, startTime, endTime, room } = timetableData;
+      const result = await this.pool.query(query, [name]);
+      return result.rows[0];
+    } catch (error) {
+      if (error.code === '23505') { // Unique violation
+        throw new ConflictException('College name already exists');
+      }
+      throw error;
+    }
+  }
 
-      // Validate that end time is after start time
-      if (this.timeToMinutes(endTime) <= this.timeToMinutes(startTime)) {
+  /**
+   * Create a new student
+   */
+  async createStudent(studentData: CreateStudentDto): Promise<Student> {
+    const { studentId, name, collegeId } = studentData;
+    
+    // Check if college exists
+    const collegeQuery = 'SELECT id FROM colleges WHERE id = $1';
+    const collegeResult = await this.pool.query(collegeQuery, [collegeId]);
+    
+    if (collegeResult.rows.length === 0) {
+      throw new NotFoundException('College not found');
+    }
+    
+    const query = `
+      INSERT INTO students (student_id, name, college_id) 
+      VALUES ($1, $2, $3) 
+      RETURNING id, student_id, name, college_id
+    `;
+    
+    try {
+      const result = await this.pool.query(query, [studentId, name, collegeId]);
+      return result.rows[0];
+    } catch (error) {
+      if (error.code === '23505') { // Unique violation
+        throw new ConflictException('Student ID already exists');
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Create a new course
+   */
+  async createCourse(courseData: CreateCourseDto): Promise<Course> {
+    const { code, name, collegeId } = courseData;
+    
+    // Check if college exists
+    const collegeQuery = 'SELECT id FROM colleges WHERE id = $1';
+    const collegeResult = await this.pool.query(collegeQuery, [collegeId]);
+    
+    if (collegeResult.rows.length === 0) {
+      throw new NotFoundException('College not found');
+    }
+    
+    const query = `
+      INSERT INTO courses (code, name, college_id) 
+      VALUES ($1, $2, $3) 
+      RETURNING id, code, name, college_id
+    `;
+    
+    try {
+      const result = await this.pool.query(query, [code, name, collegeId]);
+      return result.rows[0];
+    } catch (error) {
+      if (error.code === '23505') { // Unique violation
+        throw new ConflictException('Course code already exists');
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Create a new timetable entry
+   */
+  async createTimetable(timetableData: CreateTimetableDto): Promise<Timetable> {
+    const { courseId, dayOfWeek, startTime, endTime } = timetableData;
+    
+    // Validate time range
+    if (this.timeToMinutes(endTime) <= this.timeToMinutes(startTime)) {
+      throw new BadRequestException('End time must be after start time');
+    }
+    
+    // Check if course exists
+    const courseQuery = 'SELECT id FROM courses WHERE id = $1';
+    const courseResult = await this.pool.query(courseQuery, [courseId]);
+    
+    if (courseResult.rows.length === 0) {
+      throw new NotFoundException('Course not found');
+    }
+    
+    const client = await this.pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Check for overlapping timetables for the same course
+      const sameCourseTimetableQuery = `
+        SELECT id, start_time, end_time 
+        FROM timetables 
+        WHERE course_id = $1 
+          AND day_of_week = $2
+          AND start_time < $4
+          AND end_time > $3
+      `;
+      
+      const sameCourseTimetableResult = await client.query(sameCourseTimetableQuery, [courseId, dayOfWeek, startTime, endTime]);
+      
+      if (sameCourseTimetableResult.rows.length > 0) {
+        const existing = sameCourseTimetableResult.rows[0];
+        throw new ConflictException(`Timetable conflict: Course already has a class on ${dayOfWeek} from ${existing.start_time} to ${existing.end_time}, which overlaps with ${startTime}-${endTime}`);
+      }
+      
+      // Check for conflicts with existing enrollments
+      const conflictQuery = `
+        SELECT COUNT(*) as enrolled_students
+        FROM student_course_selections scs
+        JOIN timetables t ON scs.course_id = t.course_id
+        WHERE t.day_of_week = $1
+          AND t.start_time < $3
+          AND t.end_time > $2
+          AND scs.student_id IN (
+            SELECT DISTINCT scs2.student_id 
+            FROM student_course_selections scs2 
+            WHERE scs2.course_id = $4
+          )
+      `;
+      
+      const conflictResult = await client.query(conflictQuery, [dayOfWeek, startTime, endTime, courseId]);
+      
+      if (parseInt(conflictResult.rows[0].enrolled_students) > 0) {
+        throw new ConflictException('Cannot create timetable: would cause conflicts for enrolled students');
+      }
+      
+      // Insert timetable
+      const insertQuery = `
+        INSERT INTO timetables (course_id, day_of_week, start_time, end_time) 
+        VALUES ($1, $2, $3, $4) 
+        RETURNING id, course_id, day_of_week, start_time, end_time
+      `;
+      
+      const result = await client.query(insertQuery, [courseId, dayOfWeek, startTime, endTime]);
+      
+      await client.query('COMMIT');
+      
+      return result.rows[0];
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      if (error.code === '23505') { // Unique violation
+        throw new ConflictException('Timetable entry already exists for this course');
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Update timetable entry
+   */
+  async updateTimetable(timetableId: number, updateData: Partial<CreateTimetableDto>): Promise<Timetable> {
+    const client = await this.pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Get current timetable
+      const currentQuery = 'SELECT * FROM timetables WHERE id = $1';
+      const currentResult = await client.query(currentQuery, [timetableId]);
+      
+      if (currentResult.rows.length === 0) {
+        throw new NotFoundException('Timetable not found');
+      }
+      
+      const current = currentResult.rows[0];
+      const updates = { ...current, ...updateData };
+      
+      // Validate time range
+      if (this.timeToMinutes(updates.end_time) <= this.timeToMinutes(updates.start_time)) {
         throw new BadRequestException('End time must be after start time');
       }
-
-      // Verify course exists
-      const course = await this.courseRepository.findOne({
-        where: { id: courseId },
-        relations: ['college'],
-      });
-
-      if (!course) {
-        throw new NotFoundException(`Course with ID ${courseId} not found`);
-      }
-
-      // Check for existing timetable conflicts for the same course
-      const existingTimetables = await this.timetableRepository.find({
-        where: { courseId, dayOfWeek },
-      });
-
-      for (const existing of existingTimetables) {
-        if (
-          this.timesOverlap(
-            startTime,
-            endTime,
-            existing.startTime,
-            existing.endTime,
-          )
-        ) {
-          throw new ConflictException(
-            `Timetable conflicts with existing schedule: ${existing.dayOfWeek} ${existing.startTime}-${existing.endTime}`,
-          );
-        }
-      }
-
-      // Create new timetable
-      const timetable = this.timetableRepository.create({
-        courseId,
-        dayOfWeek,
-        startTime,
-        endTime,
-        room,
-      });
-
-      return await this.timetableRepository.save(timetable);
+      
+      // Check for conflicts (database trigger will also check this)
+      const updateQuery = `
+        UPDATE timetables 
+        SET day_of_week = $1, start_time = $2, end_time = $3
+        WHERE id = $4
+        RETURNING id, course_id, day_of_week, start_time, end_time
+      `;
+      
+      const result = await client.query(updateQuery, [
+        updates.day_of_week,
+        updates.start_time,
+        updates.end_time,
+        timetableId
+      ]);
+      
+      await client.query('COMMIT');
+      
+      return result.rows[0];
+      
     } catch (error) {
-      console.error('Error creating timetable:', error);
-      if (
-        error instanceof BadRequestException ||
-        error instanceof NotFoundException ||
-        error instanceof ConflictException
-      ) {
-        throw error;
-      }
-      throw new BadRequestException(
-        'Failed to create timetable: ' + error.message,
-      );
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
   }
 
-  async updateTimetable(
-    timetableId: number,
-    updateData: Partial<CreateTimetableDto>,
-  ): Promise<Timetable> {
+  /**
+   * Delete timetable entry
+   */
+  async deleteTimetable(timetableId: number): Promise<{message: string}> {
+    const client = await this.pool.connect();
+    
     try {
-      return await this.dataSource.transaction(async (manager) => {
-        try {
-          const timetable = await manager.findOne(Timetable, {
-            where: { id: timetableId },
-            relations: ['course'],
-          });
-
-          if (!timetable) {
-            throw new NotFoundException(
-              `Timetable with ID ${timetableId} not found`,
-            );
-          }
-
-          // Check if there are students enrolled in this course
-          const enrolledStudents = await manager.count(StudentCourseSelection, {
-            where: { courseId: timetable.courseId },
-          });
-
-          if (enrolledStudents > 0) {
-            // If students are enrolled, we need to check for conflicts with their other courses
-            const updatedTimetable = { ...timetable, ...updateData };
-
-            if (updateData.startTime && updateData.endTime) {
-              if (
-                this.timeToMinutes(updateData.endTime) <=
-                this.timeToMinutes(updateData.startTime)
-              ) {
-                throw new BadRequestException(
-                  'End time must be after start time',
-                );
-              }
-            }
-
-            // Get all students enrolled in this course
-            const enrollments = await manager.find(StudentCourseSelection, {
-              where: { courseId: timetable.courseId },
-              relations: ['student'],
-            });
-
-            // Check for conflicts with each student's other courses
-            for (const enrollment of enrollments) {
-              const studentOtherCourses = await manager
-                .createQueryBuilder(StudentCourseSelection, 'scs')
-                .leftJoinAndSelect('scs.course', 'course')
-                .leftJoinAndSelect('course.timetables', 'timetables')
-                .where('scs.studentId = :studentId', {
-                  studentId: enrollment.studentId,
-                })
-                .andWhere('scs.courseId != :courseId', {
-                  courseId: timetable.courseId,
-                })
-                .getMany();
-
-              // Check for conflicts
-              for (const otherEnrollment of studentOtherCourses) {
-                for (const otherTimetable of otherEnrollment.course
-                  .timetables) {
-                  if (
-                    otherTimetable.dayOfWeek ===
-                    (updateData.dayOfWeek || timetable.dayOfWeek)
-                  ) {
-                    const newStartTime =
-                      updateData.startTime || timetable.startTime;
-                    const newEndTime = updateData.endTime || timetable.endTime;
-
-                    if (
-                      this.timesOverlap(
-                        newStartTime,
-                        newEndTime,
-                        otherTimetable.startTime,
-                        otherTimetable.endTime,
-                      )
-                    ) {
-                      throw new ConflictException(
-                        `Cannot update timetable: would create conflict for student ${enrollment.student.name} with course ${otherEnrollment.course.code}`,
-                      );
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          // Update timetable
-          Object.assign(timetable, updateData);
-          return await manager.save(Timetable, timetable);
-        } catch (error) {
-          // Handle specific errors in the transaction
-          if (
-            error instanceof BadRequestException ||
-            error instanceof NotFoundException ||
-            error instanceof ConflictException
-          ) {
-            throw error;
-          }
-          // Log and rethrow unexpected errors
-          console.error('Error in update timetable transaction:', error);
-          throw new BadRequestException(
-            'Failed to update timetable: ' + error.message,
-          );
-        }
-      });
-    } catch (error) {
-      // Handle outer errors (outside the transaction)
-      console.error('Update timetable error:', error);
-      if (
-        error instanceof BadRequestException ||
-        error instanceof NotFoundException ||
-        error instanceof ConflictException
-      ) {
-        throw error;
+      await client.query('BEGIN');
+      
+      // Check if any students are enrolled in this course
+      const enrollmentQuery = `
+        SELECT COUNT(*) as student_count
+        FROM student_course_selections scs
+        JOIN timetables t ON scs.course_id = t.course_id
+        WHERE t.id = $1
+      `;
+      
+      const enrollmentResult = await client.query(enrollmentQuery, [timetableId]);
+      
+      if (parseInt(enrollmentResult.rows[0].student_count) > 0) {
+        throw new ConflictException('Cannot delete timetable: students are enrolled in this course');
       }
-      throw new BadRequestException(
-        'Update timetable failed: ' + error.message,
-      );
-    }
-  }
-
-  async deleteTimetable(timetableId: number): Promise<{ message: string }> {
-    try {
-      const timetable = await this.timetableRepository.findOne({
-        where: { id: timetableId },
-      });
-
-      if (!timetable) {
-        throw new NotFoundException(
-          `Timetable with ID ${timetableId} not found`,
-        );
+      
+      // Delete timetable
+      const deleteQuery = 'DELETE FROM timetables WHERE id = $1 RETURNING id';
+      const deleteResult = await client.query(deleteQuery, [timetableId]);
+      
+      if (deleteResult.rows.length === 0) {
+        throw new NotFoundException('Timetable not found');
       }
-
-      // Check if there are students enrolled in this course
-      const enrolledStudents =
-        await this.studentCourseSelectionRepository.count({
-          where: { courseId: timetable.courseId },
-        });
-
-      if (enrolledStudents > 0) {
-        throw new ConflictException(
-          'Cannot delete timetable: students are currently enrolled in this course',
-        );
-      }
-
-      await this.timetableRepository.remove(timetable);
+      
+      await client.query('COMMIT');
+      
       return { message: 'Timetable deleted successfully' };
+      
     } catch (error) {
-      console.error('Error deleting timetable:', error);
-      if (
-        error instanceof NotFoundException ||
-        error instanceof ConflictException
-      ) {
-        throw error;
-      }
-      throw new BadRequestException(
-        'Failed to delete timetable: ' + error.message,
-      );
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
   }
 
-  async getCourseTimetables(courseId: number): Promise<Timetable[]> {
+  /**
+   * Update a college
+   */
+  async updateCollege(collegeId: number, collegeData: CreateCollegeDto): Promise<College> {
+    const { name } = collegeData;
+    
+    const query = `
+      UPDATE colleges 
+      SET name = $1 
+      WHERE id = $2 
+      RETURNING id, name
+    `;
+    
     try {
-      const course = await this.courseRepository.findOne({
-        where: { id: courseId },
-      });
-
-      if (!course) {
-        throw new NotFoundException(`Course with ID ${courseId} not found`);
+      const result = await this.pool.query(query, [name, collegeId]);
+      
+      if (result.rows.length === 0) {
+        throw new NotFoundException('College not found');
       }
-
-      return await this.timetableRepository.find({
-        where: { courseId },
-        order: { dayOfWeek: 'ASC', startTime: 'ASC' },
-      });
+      
+      return result.rows[0];
     } catch (error) {
-      console.error('Error getting course timetables:', error);
-      if (error instanceof NotFoundException) {
-        throw error;
+      if (error.code === '23505') { // Unique violation
+        throw new ConflictException('College name already exists');
       }
-      throw new BadRequestException(
-        'Failed to retrieve course timetables: ' + error.message,
-      );
+      throw error;
     }
   }
 
-  private timesOverlap(
-    start1: string,
-    end1: string,
-    start2: string,
-    end2: string,
-  ): boolean {
-    const startTime1 = this.timeToMinutes(start1);
-    const endTime1 = this.timeToMinutes(end1);
-    const startTime2 = this.timeToMinutes(start2);
-    const endTime2 = this.timeToMinutes(end2);
-
-    return startTime1 < endTime2 && endTime1 > startTime2;
+  /**
+   * Delete a college
+   */
+  async deleteCollege(collegeId: number): Promise<{message: string}> {
+    const client = await this.pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Check if college has students or courses
+      const checkQuery = `
+        SELECT 
+          (SELECT COUNT(*) FROM students WHERE college_id = $1) as student_count,
+          (SELECT COUNT(*) FROM courses WHERE college_id = $1) as course_count
+      `;
+      
+      const checkResult = await client.query(checkQuery, [collegeId]);
+      const { student_count, course_count } = checkResult.rows[0];
+      
+      if (parseInt(student_count) > 0 || parseInt(course_count) > 0) {
+        throw new ConflictException('Cannot delete college with associated students or courses');
+      }
+      
+      // Delete college
+      const deleteQuery = 'DELETE FROM colleges WHERE id = $1 RETURNING id';
+      const deleteResult = await client.query(deleteQuery, [collegeId]);
+      
+      if (deleteResult.rows.length === 0) {
+        throw new NotFoundException('College not found');
+      }
+      
+      await client.query('COMMIT');
+      
+      return { message: 'College deleted successfully' };
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
+  /**
+   * Get a specific student
+   */
+  async getStudent(studentId: number): Promise<Student> {
+    const query = `
+      SELECT id, student_id, name, college_id 
+      FROM students 
+      WHERE id = $1
+    `;
+    
+    const result = await this.pool.query(query, [studentId]);
+    
+    if (result.rows.length === 0) {
+      throw new NotFoundException('Student not found');
+    }
+    
+    return result.rows[0];
+  }
+
+  /**
+   * Update a student
+   */
+  async updateStudent(studentId: number, studentData: CreateStudentDto): Promise<Student> {
+    const { studentId: newStudentId, name, collegeId } = studentData;
+    
+    // Check if college exists
+    const collegeQuery = 'SELECT id FROM colleges WHERE id = $1';
+    const collegeResult = await this.pool.query(collegeQuery, [collegeId]);
+    
+    if (collegeResult.rows.length === 0) {
+      throw new NotFoundException('College not found');
+    }
+    
+    const query = `
+      UPDATE students 
+      SET student_id = $1, name = $2, college_id = $3 
+      WHERE id = $4 
+      RETURNING id, student_id, name, college_id
+    `;
+    
+    try {
+      const result = await this.pool.query(query, [newStudentId, name, collegeId, studentId]);
+      
+      if (result.rows.length === 0) {
+        throw new NotFoundException('Student not found');
+      }
+      
+      return result.rows[0];
+    } catch (error) {
+      if (error.code === '23505') { // Unique violation
+        throw new ConflictException('Student ID already exists');
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a student
+   */
+  async deleteStudent(studentId: number): Promise<{message: string}> {
+    const client = await this.pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Delete all enrollments first (CASCADE will handle this, but being explicit)
+      await client.query('DELETE FROM student_course_selections WHERE student_id = $1', [studentId]);
+      
+      // Delete student
+      const deleteQuery = 'DELETE FROM students WHERE id = $1 RETURNING id';
+      const deleteResult = await client.query(deleteQuery, [studentId]);
+      
+      if (deleteResult.rows.length === 0) {
+        throw new NotFoundException('Student not found');
+      }
+      
+      await client.query('COMMIT');
+      
+      return { message: 'Student deleted successfully' };
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get a specific course
+   */
+  async getCourse(courseId: number): Promise<Course> {
+    const query = `
+      SELECT id, code, name, college_id 
+      FROM courses 
+      WHERE id = $1
+    `;
+    
+    const result = await this.pool.query(query, [courseId]);
+    
+    if (result.rows.length === 0) {
+      throw new NotFoundException('Course not found');
+    }
+    
+    return result.rows[0];
+  }
+
+  /**
+   * Update a course
+   */
+  async updateCourse(courseId: number, courseData: CreateCourseDto): Promise<Course> {
+    const { code, name, collegeId } = courseData;
+    
+    // Check if college exists
+    const collegeQuery = 'SELECT id FROM colleges WHERE id = $1';
+    const collegeResult = await this.pool.query(collegeQuery, [collegeId]);
+    
+    if (collegeResult.rows.length === 0) {
+      throw new NotFoundException('College not found');
+    }
+    
+    const query = `
+      UPDATE courses 
+      SET code = $1, name = $2, college_id = $3 
+      WHERE id = $4 
+      RETURNING id, code, name, college_id
+    `;
+    
+    try {
+      const result = await this.pool.query(query, [code, name, collegeId, courseId]);
+      
+      if (result.rows.length === 0) {
+        throw new NotFoundException('Course not found');
+      }
+      
+      return result.rows[0];
+    } catch (error) {
+      if (error.code === '23505') { // Unique violation
+        throw new ConflictException('Course code already exists');
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a course
+   */
+  async deleteCourse(courseId: number): Promise<{message: string}> {
+    const client = await this.pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      // Check if course has enrollments
+      const enrollmentQuery = `
+        SELECT COUNT(*) as enrollment_count
+        FROM student_course_selections
+        WHERE course_id = $1
+      `;
+      
+      const enrollmentResult = await client.query(enrollmentQuery, [courseId]);
+      
+      if (parseInt(enrollmentResult.rows[0].enrollment_count) > 0) {
+        throw new ConflictException('Cannot delete course with enrollments');
+      }
+      
+      // Delete timetables first (CASCADE will handle this, but being explicit)
+      await client.query('DELETE FROM timetables WHERE course_id = $1', [courseId]);
+      
+      // Delete course
+      const deleteQuery = 'DELETE FROM courses WHERE id = $1 RETURNING id';
+      const deleteResult = await client.query(deleteQuery, [courseId]);
+      
+      if (deleteResult.rows.length === 0) {
+        throw new NotFoundException('Course not found');
+      }
+      
+      await client.query('COMMIT');
+      
+      return { message: 'Course deleted successfully' };
+      
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Get all colleges
+   */
+  async getAllColleges(): Promise<College[]> {
+    const query = 'SELECT id, name FROM colleges ORDER BY name';
+    const result = await this.pool.query(query);
+    return result.rows;
+  }
+
+  /**
+   * Get all students for a college
+   */
+  async getStudentsByCollege(collegeId: number): Promise<Student[]> {
+    const query = `
+      SELECT id, student_id, name, college_id 
+      FROM students 
+      WHERE college_id = $1 
+      ORDER BY student_id
+    `;
+    const result = await this.pool.query(query, [collegeId]);
+    return result.rows;
+  }
+
+  /**
+   * Get all courses for a college with timetables
+   */
+  async getCoursesByCollege(collegeId: number): Promise<CourseWithTimetable[]> {
+    const query = `
+      SELECT 
+        c.id, c.code, c.name, c.college_id,
+        t.id as timetable_id, t.day_of_week, t.start_time, t.end_time
+      FROM courses c
+      LEFT JOIN timetables t ON c.id = t.course_id
+      WHERE c.college_id = $1
+      ORDER BY c.code, t.day_of_week, t.start_time
+    `;
+    
+    const result = await this.pool.query(query, [collegeId]);
+    
+    // Group timetables by course
+    const coursesMap = new Map<number, CourseWithTimetable>();
+    
+    for (const row of result.rows) {
+      if (!coursesMap.has(row.id)) {
+        coursesMap.set(row.id, {
+          id: row.id,
+          code: row.code,
+          name: row.name,
+          college_id: row.college_id,
+          timetables: []
+        });
+      }
+      
+      if (row.timetable_id) {
+        coursesMap.get(row.id)!.timetables.push({
+          id: row.timetable_id,
+          course_id: row.id,
+          day_of_week: row.day_of_week,
+          start_time: row.start_time,
+          end_time: row.end_time
+        });
+      }
+    }
+    
+    return Array.from(coursesMap.values());
+  }
+
+  /**
+   * Get timetables for a specific course
+   */
+  async getCourseTimetables(courseId: number): Promise<Timetable[]> {
+    // Check if course exists
+    const courseQuery = 'SELECT id FROM courses WHERE id = $1';
+    const courseResult = await this.pool.query(courseQuery, [courseId]);
+    
+    if (courseResult.rows.length === 0) {
+      throw new NotFoundException('Course not found');
+    }
+    
+    const query = `
+      SELECT id, course_id, day_of_week, start_time, end_time, created_at
+      FROM timetables 
+      WHERE course_id = $1
+      ORDER BY day_of_week, start_time
+    `;
+    
+    const result = await this.pool.query(query, [courseId]);
+    return result.rows;
+  }
+
+  /**
+   * Utility function to convert time to minutes
+   */
   private timeToMinutes(time: string): number {
     const [hours, minutes] = time.split(':').map(Number);
     return hours * 60 + minutes;
-  }
-
-  // College Management
-  async createCollege(collegeData: CreateCollegeDto): Promise<College> {
-    try {
-      const college = this.collegeRepository.create(collegeData);
-      return await this.collegeRepository.save(college);
-    } catch (error) {
-      console.error('Error creating college:', error);
-      throw new BadRequestException('Failed to create college: ' + error.message);
-    }
-  }
-
-  async getAllColleges(): Promise<College[]> {
-    try {
-      return await this.collegeRepository.find({
-        order: { name: 'ASC' },
-      });
-    } catch (error) {
-      console.error('Error getting colleges:', error);
-      throw new BadRequestException('Failed to retrieve colleges: ' + error.message);
-    }
-  }
-
-  async updateCollege(id: number, collegeData: CreateCollegeDto): Promise<College> {
-    try {
-      const college = await this.collegeRepository.findOne({ where: { id } });
-      if (!college) {
-        throw new NotFoundException(`College with ID ${id} not found`);
-      }
-
-      Object.assign(college, collegeData);
-      return await this.collegeRepository.save(college);
-    } catch (error) {
-      console.error('Error updating college:', error);
-      if (error instanceof NotFoundException) {
-        throw error;
-      }
-      throw new BadRequestException('Failed to update college: ' + error.message);
-    }
-  }
-
-  async deleteCollege(id: number): Promise<{ message: string }> {
-    try {
-      const college = await this.collegeRepository.findOne({ where: { id } });
-      if (!college) {
-        throw new NotFoundException(`College with ID ${id} not found`);
-      }
-
-      // Check if any students or courses are associated
-      const studentCount = await this.studentRepository.count({ where: { collegeId: id } });
-      const courseCount = await this.courseRepository.count({ where: { collegeId: id } });
-
-      if (studentCount > 0 || courseCount > 0) {
-        throw new ConflictException(
-          `Cannot delete college: ${studentCount} students and ${courseCount} courses are associated`,
-        );
-      }
-
-      await this.collegeRepository.remove(college);
-      return { message: `College "${college.name}" deleted successfully` };
-    } catch (error) {
-      console.error('Error deleting college:', error);
-      if (error instanceof NotFoundException || error instanceof ConflictException) {
-        throw error;
-      }
-      throw new BadRequestException('Failed to delete college: ' + error.message);
-    }
-  }
-
-  // Student Management
-  async createStudent(studentData: CreateStudentDto): Promise<Student> {
-    try {
-      // Verify college exists
-      const college = await this.collegeRepository.findOne({
-        where: { id: studentData.collegeId },
-      });
-      if (!college) {
-        throw new NotFoundException(`College with ID ${studentData.collegeId} not found`);
-      }
-
-      const student = this.studentRepository.create(studentData);
-      return await this.studentRepository.save(student);
-    } catch (error) {
-      console.error('Error creating student:', error);
-      if (error instanceof NotFoundException) {
-        throw error;
-      }
-      throw new BadRequestException('Failed to create student: ' + error.message);
-    }
-  }
-
-  async getStudent(id: number): Promise<Student> {
-    try {
-      const student = await this.studentRepository.findOne({
-        where: { id },
-        relations: ['college'],
-      });
-      
-      if (!student) {
-        throw new NotFoundException(`Student with ID ${id} not found`);
-      }
-
-      return student;
-    } catch (error) {
-      console.error('Error getting student:', error);
-      if (error instanceof NotFoundException) {
-        throw error;
-      }
-      throw new BadRequestException('Failed to retrieve student: ' + error.message);
-    }
-  }
-
-  async updateStudent(id: number, studentData: CreateStudentDto): Promise<Student> {
-    try {
-      const student = await this.studentRepository.findOne({ where: { id } });
-      if (!student) {
-        throw new NotFoundException(`Student with ID ${id} not found`);
-      }
-
-      // Verify college exists if collegeId is being updated
-      if (studentData.collegeId !== student.collegeId) {
-        const college = await this.collegeRepository.findOne({
-          where: { id: studentData.collegeId },
-        });
-        if (!college) {
-          throw new NotFoundException(`College with ID ${studentData.collegeId} not found`);
-        }
-      }
-
-      Object.assign(student, studentData);
-      return await this.studentRepository.save(student);
-    } catch (error) {
-      console.error('Error updating student:', error);
-      if (error instanceof NotFoundException) {
-        throw error;
-      }
-      throw new BadRequestException('Failed to update student: ' + error.message);
-    }
-  }
-
-  async deleteStudent(id: number): Promise<{ message: string }> {
-    try {
-      return await this.dataSource.transaction(async (manager) => {
-        const student = await manager.findOne(Student, { where: { id } });
-        if (!student) {
-          throw new NotFoundException(`Student with ID ${id} not found`);
-        }
-
-        // Remove all enrollments first
-        await manager.delete(StudentCourseSelection, { studentId: id });
-        
-        // Remove student
-        await manager.remove(student);
-        
-        return { message: `Student "${student.name}" deleted successfully` };
-      });
-    } catch (error) {
-      console.error('Error deleting student:', error);
-      if (error instanceof NotFoundException) {
-        throw error;
-      }
-      throw new BadRequestException('Failed to delete student: ' + error.message);
-    }
-  }
-
-  // Course Management
-  async createCourse(courseData: CreateCourseDto): Promise<Course> {
-    try {
-      // Verify college exists
-      const college = await this.collegeRepository.findOne({
-        where: { id: courseData.collegeId },
-      });
-      if (!college) {
-        throw new NotFoundException(`College with ID ${courseData.collegeId} not found`);
-      }
-
-      const course = this.courseRepository.create(courseData);
-      return await this.courseRepository.save(course);
-    } catch (error) {
-      console.error('Error creating course:', error);
-      if (error instanceof NotFoundException) {
-        throw error;
-      }
-      throw new BadRequestException('Failed to create course: ' + error.message);
-    }
-  }
-
-  async getCourse(id: number): Promise<Course> {
-    try {
-      const course = await this.courseRepository.findOne({
-        where: { id },
-        relations: ['college'],
-      });
-      
-      if (!course) {
-        throw new NotFoundException(`Course with ID ${id} not found`);
-      }
-
-      return course;
-    } catch (error) {
-      console.error('Error getting course:', error);
-      if (error instanceof NotFoundException) {
-        throw error;
-      }
-      throw new BadRequestException('Failed to retrieve course: ' + error.message);
-    }
-  }
-
-  async updateCourse(id: number, courseData: CreateCourseDto): Promise<Course> {
-    try {
-      const course = await this.courseRepository.findOne({ where: { id } });
-      if (!course) {
-        throw new NotFoundException(`Course with ID ${id} not found`);
-      }
-
-      // Verify college exists if collegeId is being updated
-      if (courseData.collegeId !== course.collegeId) {
-        const college = await this.collegeRepository.findOne({
-          where: { id: courseData.collegeId },
-        });
-        if (!college) {
-          throw new NotFoundException(`College with ID ${courseData.collegeId} not found`);
-        }
-      }
-
-      Object.assign(course, courseData);
-      return await this.courseRepository.save(course);
-    } catch (error) {
-      console.error('Error updating course:', error);
-      if (error instanceof NotFoundException) {
-        throw error;
-      }
-      throw new BadRequestException('Failed to update course: ' + error.message);
-    }
-  }
-
-  async deleteCourse(id: number): Promise<{ message: string }> {
-    try {
-      return await this.dataSource.transaction(async (manager) => {
-        const course = await manager.findOne(Course, { where: { id } });
-        if (!course) {
-          throw new NotFoundException(`Course with ID ${id} not found`);
-        }
-
-        // Check if any enrollments exist
-        const enrollmentCount = await manager.count(StudentCourseSelection, {
-          where: { courseId: id },
-        });
-
-        if (enrollmentCount > 0) {
-          throw new ConflictException(
-            `Cannot delete course: ${enrollmentCount} students are enrolled`,
-          );
-        }
-
-        // Remove all timetables first
-        await manager.delete(Timetable, { courseId: id });
-        
-        // Remove course
-        await manager.remove(course);
-        
-        return { message: `Course "${course.name}" deleted successfully` };
-      });
-    } catch (error) {
-      console.error('Error deleting course:', error);
-      if (error instanceof NotFoundException || error instanceof ConflictException) {
-        throw error;
-      }
-      throw new BadRequestException('Failed to delete course: ' + error.message);
-    }
-  }
-
-  async validateTimetable(
-    timetableData: CreateTimetableDto,
-  ): Promise<{ valid: boolean; message: string; conflicts: string[] }> {
-    const { courseId, dayOfWeek, startTime, endTime } = timetableData;
-    const conflicts: string[] = [];
-
-    try {
-      // Validate that end time is after start time
-      if (this.timeToMinutes(endTime) <= this.timeToMinutes(startTime)) {
-        conflicts.push('End time must be after start time');
-      }
-
-      // Verify course exists
-      const course = await this.courseRepository.findOne({
-        where: { id: courseId },
-      });
-
-      if (!course) {
-        conflicts.push(`Course with ID ${courseId} not found`);
-      }
-
-      // Check for existing timetable conflicts for the same course
-      const existingTimetables = await this.timetableRepository.find({
-        where: { courseId, dayOfWeek },
-      });
-
-      for (const existing of existingTimetables) {
-        if (this.timesOverlap(startTime, endTime, existing.startTime, existing.endTime)) {
-          conflicts.push(
-            `Time conflict: ${dayOfWeek} ${startTime}-${endTime} overlaps with existing ${existing.startTime}-${existing.endTime}`,
-          );
-        }
-      }
-
-      const isValid = conflicts.length === 0;
-      return {
-        valid: isValid,
-        message: isValid ? 'Timetable validation successful' : 'Timetable validation failed',
-        conflicts,
-      };
-    } catch (error) {
-      console.error('Error validating timetable:', error);
-      return {
-        valid: false,
-        message: 'Validation failed due to system error',
-        conflicts: ['System error during validation'],
-      };
-    }
   }
 }

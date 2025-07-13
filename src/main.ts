@@ -37,7 +37,7 @@ async function bootstrap() {
       .setVersion('1.0')
       .addTag('enrollment', 'Student course enrollment operations')
       .addTag('admin', 'Administrative operations for timetable management')
-      .addServer('http://localhost:3000', 'Development server')
+      .addServer('http://localhost:3001', 'Development server')
       .build();
 
     const document = SwaggerModule.createDocument(app, config);
@@ -52,7 +52,7 @@ async function bootstrap() {
 
     // Get configured port from environment or use default
     const configService = app.get(ConfigService);
-    const port = configService.get('PORT') || 3000;
+    const port = configService.get('PORT') || 3001;
 
     await app.listen(port);
     logger.log(`Application is running on: http://localhost:${port}`);
