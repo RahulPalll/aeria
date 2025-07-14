@@ -119,9 +119,9 @@ INSERT INTO timetables (course_id, day_of_week, start_time, end_time, is_overnig
 (5, 'TUESDAY', '09:00', '10:30', FALSE, 'MIT-501'),   -- PH101
 (5, 'THURSDAY', '09:00', '10:30', FALSE, 'MIT-501'),
 
--- MIT Overnight Classes (Edge Case Testing)
-(6, 'FRIDAY', '22:00', '02:00', TRUE, 'MIT-Lab1'),    -- CS301 AI Lab (overnight)
-(6, 'SATURDAY', '22:00', '02:00', TRUE, 'MIT-Lab1'),  
+-- MIT Overnight Classes (Edge Case Testing) - Fixed duration to comply with constraints
+(6, 'FRIDAY', '22:00', '01:00', TRUE, 'MIT-Lab1'),    -- CS301 AI Lab (overnight, 3 hours)
+(6, 'SATURDAY', '22:00', '01:00', TRUE, 'MIT-Lab1'),  
 
 -- Stanford Course Timetables (No Overnight - College Policy)
 (7, 'MONDAY', '10:00', '11:30', FALSE, 'STF-A101'),   -- CS106
@@ -145,19 +145,19 @@ INSERT INTO timetables (course_id, day_of_week, start_time, end_time, is_overnig
 (15, 'MONDAY', '16:00', '18:00', FALSE, 'UCB-J501'),  -- CS270 (2-hour advanced class)
 (15, 'WEDNESDAY', '16:00', '18:00', FALSE, 'UCB-J501'),
 
--- Harvard Course Timetables (Overnight Allowed, No Weekends)
+-- Harvard Course Timetables (Overnight Allowed, No Weekends) - Fixed duration
 (16, 'MONDAY', '11:00', '12:30', FALSE, 'HRV-K101'),  -- CS150
 (16, 'WEDNESDAY', '11:00', '12:30', FALSE, 'HRV-K101'),
 (17, 'TUESDAY', '14:00', '17:00', FALSE, 'HRV-L201'), -- PH150 (3-hour lab)
-(17, 'THURSDAY', '23:00', '01:00', TRUE, 'HRV-L201'), -- PH150 Overnight observation
+(17, 'THURSDAY', '23:00', '02:00', TRUE, 'HRV-L201'), -- PH150 Overnight observation (3 hours)
 (18, 'MONDAY', '09:00', '10:30', FALSE, 'HRV-M301'),  -- MA150
 (18, 'FRIDAY', '09:00', '10:30', FALSE, 'HRV-M301'),
 
--- Caltech Course Timetables (Research-Focused with Long Sessions)
+-- Caltech Course Timetables (Research-Focused with Long Sessions) - Fixed durations
 (19, 'TUESDAY', '10:00', '13:00', FALSE, 'CIT-N101'), -- CS180 (3-hour research session)
 (19, 'THURSDAY', '19:00', '23:00', FALSE, 'CIT-N101'), -- CS180 Evening session (4 hours)
-(20, 'MONDAY', '20:00', '23:59', FALSE, 'CIT-O201'),  -- PH180 Late evening observation
-(20, 'WEDNESDAY', '22:30', '01:30', TRUE, 'CIT-O201'), -- PH180 Overnight observation
+(20, 'MONDAY', '20:00', '23:30', FALSE, 'CIT-O201'),  -- PH180 Late evening observation (3.5 hours)
+(20, 'WEDNESDAY', '22:30', '02:30', TRUE, 'CIT-O201'), -- PH180 Overnight observation (4 hours)
 (21, 'FRIDAY', '13:00', '16:00', FALSE, 'CIT-P301');  -- MA180 (3-hour intensive)
 
 -- ================================
@@ -178,25 +178,25 @@ INSERT INTO student_course_selections (student_id, course_id, grade, completion_
 (4, 7, NULL, NULL, FALSE),        -- Bob enrolled in CS106
 (5, 10, NULL, NULL, FALSE),       -- Alice enrolled in EN101
 
--- UC Berkeley Students
-(7, 11, NULL, NULL, FALSE),       -- Charlie enrolled in CS161 (using course 11 instead of 12)
-(8, 13, NULL, NULL, FALSE),       -- Emma enrolled in MA110 (using course 13 instead of 14)
+-- UC Berkeley Students - Fixed to use correct course IDs
+(7, 12, NULL, NULL, FALSE),       -- Charlie enrolled in CS161 (course_id 12)
+(8, 14, NULL, NULL, FALSE),       -- Emma enrolled in MA110 (course_id 14)
 
--- Harvard Students
-(9, 15, NULL, NULL, FALSE),       -- David enrolled in CS150 (using course 15)
+-- Harvard Students - Fixed to use correct course IDs  
+(9, 16, NULL, NULL, FALSE),       -- David enrolled in CS150 (course_id 16)
 
--- Caltech Students
-(11, 18, NULL, NULL, FALSE);      -- Mike enrolled in CS180 (using course 18)
+-- Caltech Students - Fixed to use correct course IDs
+(11, 19, NULL, NULL, FALSE);      -- Mike enrolled in CS180 (course_id 19)
 -- ================================
 -- EDGE CASE TEST SCENARIOS DOCUMENTATION
 -- ================================
 
 -- This seed data includes the following edge case test scenarios:
 
--- 1. OVERNIGHT CLASSES:
---    - MIT CS301 AI Lab: Friday/Saturday 22:00-02:00 (allowed by policy)
---    - Harvard PH150: Thursday 23:00-01:00 overnight observation
---    - Caltech PH180: Wednesday 22:30-01:30 overnight research
+-- 1. OVERNIGHT CLASSES (Fixed durations to comply with constraints):
+--    - MIT CS301 AI Lab: Friday/Saturday 22:00-01:00 (3 hours, allowed by policy)
+--    - Harvard PH150: Thursday 23:00-02:00 overnight observation (3 hours)
+--    - Caltech PH180: Wednesday 22:30-02:30 overnight research (4 hours)
 
 -- 2. PREREQUISITES VALIDATION:
 --    - CS102 requires CS101 with grade C+ (John ✅, Jane ✅, Alex ❌)

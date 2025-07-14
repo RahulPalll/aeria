@@ -79,14 +79,39 @@ CREATE TABLE timetables (
     
     -- Entity-level constraints
     CONSTRAINT chk_valid_day CHECK (day_of_week IN ('MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY', 'SUNDAY')),
-    -- Enhanced time validation for overnight classes
+    
+    -- Enhanced time validation for regular and overnight classes
     CONSTRAINT chk_valid_time_range CHECK (
-        (is_overnight_class = FALSE AND end_time > start_time) OR
-        (is_overnight_class = TRUE AND start_time > end_time) OR
-        (is_overnight_class = TRUE AND start_time = end_time)
+        CASE 
+            WHEN is_overnight_class = FALSE THEN 
+                end_time > start_time  -- Regular classes: end must be after start
+            WHEN is_overnight_class = TRUE THEN 
+                start_time > end_time  -- Overnight classes: start must be after end (cross midnight)
+            ELSE FALSE
+        END
     ),
-    CONSTRAINT chk_minimum_class_duration CHECK (EXTRACT(EPOCH FROM (end_time - start_time)) >= 1800), -- Minimum 30 minutes
-    CONSTRAINT chk_maximum_class_duration CHECK (EXTRACT(EPOCH FROM (end_time - start_time)) <= 14400), -- Maximum 4 hours
+    
+    -- Prevent start_time = end_time for all classes (zero duration not allowed)
+    CONSTRAINT chk_no_same_start_end_time CHECK (start_time != end_time),
+    
+    -- Additional validation: prevent invalid overnight class times
+    CONSTRAINT chk_overnight_class_validity CHECK (
+        CASE 
+            WHEN is_overnight_class = TRUE THEN 
+                start_time >= '18:00'::TIME AND end_time <= '08:00'::TIME  -- Overnight classes: start 6PM-11:59PM, end 12:00AM-8AM
+            ELSE TRUE
+        END
+    ),
+    
+    -- Enhanced duration validation for both regular and overnight classes
+    CONSTRAINT chk_minimum_class_duration CHECK (
+        (is_overnight_class = FALSE AND EXTRACT(EPOCH FROM (end_time - start_time)) >= 1800) OR -- Regular: minimum 30 minutes
+        (is_overnight_class = TRUE AND EXTRACT(EPOCH FROM (end_time - start_time + INTERVAL '1 day')) >= 1800) -- Overnight: minimum 30 minutes
+    ),
+    CONSTRAINT chk_maximum_class_duration CHECK (
+        (is_overnight_class = FALSE AND EXTRACT(EPOCH FROM (end_time - start_time)) <= 14400) OR -- Regular: maximum 4 hours
+        (is_overnight_class = TRUE AND EXTRACT(EPOCH FROM (end_time - start_time + INTERVAL '1 day')) <= 14400) -- Overnight: maximum 4 hours
+    ),
     CONSTRAINT chk_valid_start_time CHECK (start_time >= '00:00' AND start_time <= '23:59'), -- Allow full day range
     CONSTRAINT chk_valid_end_time CHECK (end_time >= '00:00' AND end_time <= '23:59'), -- Allow full day range
     
@@ -148,13 +173,14 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION check_timetable_conflicts()
 RETURNS TRIGGER AS $$
 BEGIN
-    -- Check for timetable conflicts with existing enrollments
+    -- Check for timetable conflicts with existing active enrollments only
     IF EXISTS (
         SELECT 1 
         FROM student_course_selections scs
         JOIN timetables t1 ON scs.course_id = t1.course_id
         JOIN timetables t2 ON NEW.course_id = t2.course_id
         WHERE scs.student_id = NEW.student_id
+          AND scs.is_completed = FALSE  -- Only check active enrollments
           AND t1.day_of_week = t2.day_of_week
           AND t1.start_time < t2.end_time
           AND t1.end_time > t2.start_time

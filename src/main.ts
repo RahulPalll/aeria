@@ -52,7 +52,7 @@ async function bootstrap() {
 
     // Get configured port from environment or use default
     const configService = app.get(ConfigService);
-    const port = configService.get('PORT') || 3001;
+    const port = configService.get('PORT') || 3000;
 
     await app.listen(port);
     logger.log(`Application is running on: http://localhost:${port}`);
